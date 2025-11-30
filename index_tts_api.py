@@ -1,11 +1,12 @@
 import os
 import uuid
 import wave
+import urllib.request
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 
-from indextts.infer import IndexTTS
+from indextts.infer_v2 import IndexTTS2
 
 
 def chunk_text(text: str, max_len: int) -> List[str]:
@@ -49,12 +50,15 @@ class TTSService:
         use_fp16: bool = True,
         use_cuda_kernel: bool = False,
     ) -> None:
-        self.tts = IndexTTS(
+        self.tts = IndexTTS2(
             model_dir=model_dir,
             cfg_path=cfg_path,
             use_fp16=use_fp16,
             use_cuda_kernel=use_cuda_kernel,
         )
+        self._sr = int(self.tts.cfg.s2mel['preprocess_params']['sr'])
+        self._hop = int(self.tts.cfg.s2mel['preprocess_params']['spect_params']['hop_length'])
+        self._code_to_frame = 1.72
 
     def infer_chunk(
         self,
@@ -63,18 +67,22 @@ class TTSService:
         out_path: str,
         verbose: bool = False,
         max_text_tokens_per_segment: Optional[int] = None,
+        duration_sec: Optional[float] = None,
     ) -> str:
         kwargs = {}
         if max_text_tokens_per_segment is not None:
             kwargs["max_text_tokens_per_segment"] = max_text_tokens_per_segment
-        self.tts.infer_fast(
-            audio_prompt=voice_path,
+        if duration_sec is not None and duration_sec > 0:
+            frames = duration_sec * (self._sr / self._hop)
+            code_len = int(max(32, round(frames / self._code_to_frame)))
+            kwargs["max_mel_tokens"] = code_len
+        return self.tts.infer(
+            spk_audio_prompt=voice_path,
             text=text,
             output_path=out_path,
             verbose=verbose,
             **kwargs,
         )
-        return out_path
 
 
 app = FastAPI()
@@ -92,30 +100,66 @@ def health() -> JSONResponse:
 
 @app.post("/synthesize")
 async def synthesize(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    text: Optional[str] = Form(None),
+    text_url: Optional[str] = Form(None),
     voice_path: str = Form(...),
     drive_dir: Optional[str] = Form(None),
     chunk_length: int = Form(CHUNK_LENGTH),
     session_id: Optional[str] = Form(None),
+    duration_sec: Optional[float] = Form(None),
 ) -> JSONResponse:
-    content = await file.read()
-    text = content.decode("utf-8")
+    if file is not None:
+        content = await file.read()
+        text = content.decode("utf-8")
+    elif text is not None:
+        pass
+    elif text_url is not None:
+        try:
+            with urllib.request.urlopen(text_url) as resp:
+                text = resp.read().decode("utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"failed to fetch text_url: {e}")
+    else:
+        raise HTTPException(status_code=400, detail="one of file | text | text_url is required")
+    cps_env = os.getenv("CN_CHAR_PER_SEC", "5.0")
+    try:
+        cps = float(cps_env)
+    except Exception:
+        cps = 5.0
+    text_len = len("".join(text.split()))
+    if text_len == 0:
+        raise HTTPException(status_code=400, detail="empty text")
+    est_sec = max(0.2, text_len / cps)
+    if duration_sec is not None:
+        if duration_sec <= 0:
+            raise HTTPException(status_code=400, detail="duration_sec must be > 0")
+        low = 0.5 * est_sec
+        high = 1.5 * est_sec
+        if not (low <= duration_sec <= high):
+            raise HTTPException(status_code=400, detail=f"duration_sec out of allowed range [{low:.2f}, {high:.2f}] for estimated {est_sec:.2f}s")
     sid = session_id or str(uuid.uuid4())
     base_dir = drive_dir or os.getenv("GOOGLE_DRIVE_DIR", "outputs")
     out_dir = os.path.join(base_dir, sid)
     os.makedirs(out_dir, exist_ok=True)
     chunks = chunk_text(text, chunk_length)
     chunk_files: List[str] = []
+    total_chars = sum(len(c) for c in chunks) or 1
     for idx, chunk in enumerate(chunks, start=1):
         name = f"chunk_{idx:04d}.wav"
         path = os.path.join(out_dir, name)
-        service.infer_chunk(
+        dsec = None
+        if duration_sec is not None and duration_sec > 0:
+            ratio = len(chunk) / total_chars
+            dsec = max(0.2, duration_sec * ratio)
+        out = service.infer_chunk(
             text=chunk,
             voice_path=voice_path,
             out_path=path,
             verbose=False,
+            duration_sec=dsec,
         )
-        chunk_files.append(path)
+        chunk_files.append(out or path)
     final_path = os.path.join(out_dir, "final.wav")
     merge_wavs(chunk_files, final_path)
     return JSONResponse(
@@ -132,12 +176,43 @@ def main() -> None:
     import uvicorn
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "7860"))
-    print(f"IndexTTS API running: http://{host}:{port}")
-    print(f"Docs: http://127.0.0.1:{port}/docs")
-    print(
-        f"curl -F \"file=@/path/text.txt\" -F \"voice_path=/path/voice.wav\" -F \"drive_dir=/content/drive/MyDrive/IndexTTS/outputs\" http://127.0.0.1:{port}/synthesize"
-    )
-    uvicorn.run(app, host=host, port=port)
+    share = os.getenv("GRADIO_SHARE", "false").lower() in ("1", "true", "yes")
+    if share:
+        import gradio as gr
+        print(f"IndexTTS API running: http://{host}:{port}/api")
+        print(f"Docs: http://{host}:{port}/api/docs")
+        print(
+            f"curl -F \"file=@/path/text.txt\" -F \"voice_path=/path/voice.wav\" -F \"drive_dir=/content/drive/MyDrive/IndexTTS/outputs\" http://{host}:{port}/api/synthesize"
+        )
+        print(
+            f"curl -F \"text=你好，世界\" -F \"voice_path=/path/voice.wav\" http://{host}:{port}/api/synthesize"
+        )
+        print(
+            f"curl -F \"text_url=https://example.com/input.txt\" -F \"voice_path=/path/voice.wav\" http://{host}:{port}/api/synthesize"
+        )
+        print(
+            f"curl -F \"file=@C:\\tts.txt\" -F \"voice_path=C:\\sample.wav\" http://{host}:{port}/api/synthesize"
+        )
+        demo = gr.Blocks()
+        demo.app.mount("/api", app)
+        demo.queue(16)
+        demo.launch(server_name=host, server_port=port, share=True)
+    else:
+        print(f"IndexTTS API running: http://{host}:{port}")
+        print(f"Docs: http://127.0.0.1:{port}/docs")
+        print(
+            f"curl -F \"file=@/path/text.txt\" -F \"voice_path=/path/voice.wav\" -F \"drive_dir=/content/drive/MyDrive/IndexTTS/outputs\" http://127.0.0.1:{port}/synthesize"
+        )
+        print(
+            f"curl -F \"text=你好，世界\" -F \"voice_path=/path/voice.wav\" http://127.0.0.1:{port}/synthesize"
+        )
+        print(
+            f"curl -F \"text_url=https://example.com/input.txt\" -F \"voice_path=/path/voice.wav\" http://127.0.0.1:{port}/synthesize"
+        )
+        print(
+            f"curl -F \"file=@C:\\tts.txt\" -F \"voice_path=C:\\sample.wav\" http://127.0.0.1:{port}/synthesize"
+        )
+        uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
