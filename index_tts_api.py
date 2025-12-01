@@ -4,6 +4,7 @@ import wave
 import shutil
 import uvicorn
 from typing import List, Optional
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from pyngrok import ngrok
 
@@ -82,27 +83,36 @@ class TTSService:
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="IndexTTS API", description="A pure API for IndexTTS2 using FastAPI and ngrok.")
+app = FastAPI(title="IndexTTS API", description="A pure API for IndexTTS2 using FastAPI and ngrok.", lifespan=lifespan)
 
 tts_service: Optional[TTSService] = None
 
-@app.on_event("startup")
-def load_model():
-    """Load the TTS model on application startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Load the TTS model on application startup and handle shutdown.
+    """
     global tts_service
-    model_dir = os.environ.get("MODEL_DIR", "/app/models")
+    print("--- Lifespan startup ---")
+    model_dir = os.environ.get("MODEL_DIR", "/content/index-tts/checkpoints/IndexTTS-2")
     config_path = os.path.join(model_dir, "config.json")
     
     if not os.path.exists(model_dir) or not os.path.exists(config_path):
         print(f"\033[91mWarning: Model directory or config not found at {model_dir}. The API will not work.\033[0m")
-        return
+    else:
+        try:
+            print("Loading TTS model...")
+            tts_service = TTSService(model_dir=model_dir, cfg_path=config_path, use_fp16=True)
+            print("\033[92mTTS Service loaded successfully.\033[0m")
+        except Exception as e:
+            print(f"\033[91mError loading TTS Service: {e}\033[0m")
+    
+    yield
+    
+    print("--- Lifespan shutdown ---")
+    tts_service = None
 
-    try:
-        print("Loading TTS model...")
-        tts_service = TTSService(model_dir=model_dir, cfg_path=config_path, use_fp16=True)
-        print("\033[92mTTS Service loaded successfully.\033[0m")
-    except Exception as e:
-        print(f"\033[91mError loading TTS Service: {e}\033[0m")
+tts_service: Optional[TTSService] = None
 
 @app.post("/api/synthesize")
 async def synthesize(
