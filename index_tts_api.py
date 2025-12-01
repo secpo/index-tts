@@ -110,7 +110,6 @@ async def synthesize(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     duration_sec: Optional[float] = Form(None),
-    drive_dir: Optional[str] = Form(None),
 ):
     """Synthesize speech from text or a text file with chunking."""
     if tts_service is None:
@@ -156,11 +155,10 @@ async def synthesize(
             raise HTTPException(status_code=500, detail="Synthesis failed, no audio chunks were generated.")
 
         output_filename = f"{uuid.uuid4()}_final.wav"
-        # Use Google Drive dir if provided and valid, otherwise use a temp dir
-        if drive_dir and os.path.isdir(drive_dir):
-            final_out_path = os.path.join(drive_dir, output_filename)
-        else:
-            final_out_path = os.path.join("/tmp", output_filename)
+        # Hardcode the output directory to a specific Google Drive path
+        output_dir = "/content/drive/MyDrive/IndexTTS/outputs"
+        os.makedirs(output_dir, exist_ok=True) # Ensure the directory exists
+        final_out_path = os.path.join(output_dir, output_filename)
         
         merge_wavs(wav_paths, final_out_path)
         print(f"\033[92mSynthesis complete. Final audio at: {final_out_path}\033[0m")
@@ -174,7 +172,7 @@ def main():
     """Sets up ngrok tunnel and starts the FastAPI server."""
     # Get config from environment variables
     host = os.environ.get("API_HOST", "127.0.0.1")
-    port = int(os.environ.get("API_PORT", 7860))
+    port = int(os.environ.get("API_PORT", 7890))
     ngrok_authtoken = os.environ.get("NGROK_AUTHTOKEN")
 
     if ngrok_authtoken:
