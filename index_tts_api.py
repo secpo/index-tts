@@ -1,6 +1,8 @@
+
 import os
 import uuid
 import wave
+import re
 import shutil
 import uvicorn
 from typing import List, Optional
@@ -12,22 +14,71 @@ from indextts.infer_v2 import IndexTTS2
 
 # --- Helper Functions ---
 
-def chunk_text(text: str, max_len: int) -> List[str]:
-    """Splits text into chunks of a maximum length."""
-    seps = {".", "!", "?", "。", "！", "？", "；", ";", "，", ",", "\n", " "}
-    res: List[str] = []
+def move_punctuation_for_english_quotes(text: str) -> str:
+    """
+    专门处理英文引号(" " 和 ' ')，不使用正则表达式，将引号内末尾的标点移动到引号外
+    """
+    punctuations = {'.', '。', '!', '！', '?', '？'}
+    quote_chars = {'"', "'"}
+    
+    char_list = list(text)
+    n = len(char_list)
+    
     i = 0
-    n = len(text)
     while i < n:
-        j = min(i + max_len, n)
-        k = j
-        while k > i and text[k - 1] not in seps:
-            k -= 1
-        if k == i:
-            k = j
-        res.append(text[i:k].strip())
-        i = k
-    return [s for s in res if s]
+        current_char = char_list[i]
+        if current_char in quote_chars:
+            left_quote_index = i
+            right_quote_index = -1
+            for j in range(left_quote_index + 1, n):
+                if char_list[j] == current_char:
+                    right_quote_index = j
+                    break # 找到后立即停止
+            if right_quote_index != -1:
+                char_before_right_quote_index = right_quote_index - 1
+                if char_before_right_quote_index > left_quote_index and char_list[char_before_right_quote_index] in punctuations:
+                    punc = char_list[char_before_right_quote_index]
+                    quote = char_list[right_quote_index]
+                    char_list[char_before_right_quote_index] = quote
+                    char_list[right_quote_index] = punc
+                i = right_quote_index + 1
+            else:
+                i += 1
+        else:
+            i += 1
+    return "".join(char_list)
+
+def chunk_text(text, max_length=250, min_length=15) -> List[str]:
+    """
+    Splits the text into chunks with robust handling for the final chunk.
+    """
+    text = text.replace("’", "'").replace("‘", "'").replace("”", '"').replace("“", '"').replace("·", "").replace("…", "，")
+    text = re.sub(r'《([^》]+)》', lambda m: f"《{m.group(1).replace(',', ' ')}》", text)
+    # 去除所有空白符（空格、tab、换行符等）
+    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'([。！？!?，,])+', r'\1', text)
+    text = move_punctuation_for_english_quotes(text)
+    # 在连续英文与数字之间插入连字符，例如 U2 -> U-2，3M -> 3-M；纯数字或纯英文不处理
+    text = re.sub(r'([A-Za-z])(?=\d)', r'\1-', text)
+    text = re.sub(r'(\d)(?=[A-Za-z])', r'\1-', text)
+    sentences = re.split(r'(?<=[。！？!?])', text)
+
+    chunks = []
+    current_chunk = ""
+    for sentence in sentences:
+        if current_chunk and len(current_chunk) + len(sentence) > max_length:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            current_chunk += sentence
+
+    if current_chunk:
+        if chunks and len(current_chunk.strip()) < min_length:
+            chunks[-1] += " " + current_chunk.strip()
+        else:
+            chunks.append(current_chunk.strip()) 
+
+    return chunks
 
 def merge_wavs(paths: List[str], out_path: str) -> None:
     """Merges multiple WAV files into a single file."""
@@ -83,10 +134,6 @@ class TTSService:
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="IndexTTS API", description="A pure API for IndexTTS2 using FastAPI and ngrok.", lifespan=lifespan)
-
-tts_service: Optional[TTSService] = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -110,7 +157,10 @@ async def lifespan(app: FastAPI):
     yield
     
     print("--- Lifespan shutdown ---")
+    # Clean up the ML models and release the resources
     tts_service = None
+
+app = FastAPI(title="IndexTTS API", description="A pure API for IndexTTS2 using FastAPI and ngrok.", lifespan=lifespan)
 
 tts_service: Optional[TTSService] = None
 
@@ -142,7 +192,7 @@ async def synthesize(
     os.makedirs(temp_dir, exist_ok=True)
     
     try:
-        chunks = chunk_text(input_text, max_len=200)
+        chunks = chunk_text(input_text, max_len=250)
         wav_paths = []
 
         print(f"Starting synthesis for {len(chunks)} chunks...")
