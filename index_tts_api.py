@@ -1,14 +1,25 @@
-
 import os
 import uuid
 import wave
+import argparse
 import re
 import shutil
+import sys
 import uvicorn
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from pyngrok import ngrok
+
+# --- Command Line Arguments ---
+parser = argparse.ArgumentParser(
+    description="IndexTTS API Server",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+)
+parser.add_argument("--model_dir", type=str, default="./checkpoints", help="Model checkpoints directory")
+parser.add_argument("--fp16", action="store_true", default=True, help="Use FP16 for inference if available")
+parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
+cmd_args = parser.parse_args()
 
 from indextts.infer_v2 import IndexTTS2
 
@@ -92,8 +103,6 @@ def merge_wavs(paths: List[str], out_path: str) -> None:
             with wave.open(p, "rb") as w:
                 out.writeframes(w.readframes(w.getnframes()))
 
-# --- TTS Service Class ---
-
 class TTSService:
     """A service class to handle Text-to-Speech inference."""
     def __init__(
@@ -138,22 +147,41 @@ class TTSService:
 async def lifespan(app: FastAPI):
     """
     Load the TTS model on application startup and handle shutdown.
+    Aligns with webui.py model loading logic.
     """
     global tts_service
     print("--- Lifespan startup ---")
-    model_dir = os.environ.get("MODEL_DIR", "/content/index-tts/checkpoints/IndexTTS-2")
-    config_path = os.path.join(model_dir, "config.json")
-    
-    if not os.path.exists(model_dir) or not os.path.exists(config_path):
-        print(f"\033[91mWarning: Model directory or config not found at {model_dir}. The API will not work.\033[0m")
-    else:
-        try:
-            print("Loading TTS model...")
-            tts_service = TTSService(model_dir=model_dir, cfg_path=config_path, use_fp16=True)
-            print("\033[92mTTS Service loaded successfully.\033[0m")
-        except Exception as e:
-            print(f"\033[91mError loading TTS Service: {e}\033[0m")
-    
+
+    # 1. Check if model directory exists
+    if not os.path.isdir(cmd_args.model_dir):
+        print(f"\033[91mError: Model directory '{cmd_args.model_dir}' not found. Please specify a valid path with --model_dir.\033[0m")
+        sys.exit(1)
+
+    # 2. Check for required model files
+    config_path = os.path.join(cmd_args.model_dir, "config.yaml")
+    required_files = ["bpe.model", "gpt.pth", "s2mel.pth", "wav2vec2bert_stats.pt", "config.yaml"]
+    missing_files = [f for f in required_files if not os.path.isfile(os.path.join(cmd_args.model_dir, f))]
+
+    if missing_files:
+        print(f"\033[91mError: The following required files are missing from '{cmd_args.model_dir}':\033[0m")
+        for f in missing_files:
+            print(f"  - {f}")
+        sys.exit(1)
+
+    # 3. Load the TTS model
+    try:
+        print("Loading TTS model...")
+        tts_service = TTSService(
+            model_dir=cmd_args.model_dir,
+            cfg_path=config_path,
+            use_fp16=cmd_args.fp16,
+            use_cuda_kernel=cmd_args.cuda_kernel,
+        )
+        print("\033[92mTTS Service loaded successfully.\033[0m")
+    except Exception as e:
+        print(f"\033[91mError loading TTS Service: {e}\033[0m")
+        sys.exit(1)
+        
     yield
     
     print("--- Lifespan shutdown ---")
