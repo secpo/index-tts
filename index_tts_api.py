@@ -223,7 +223,7 @@ async def synthesize(
         raise HTTPException(status_code=400, detail="Input text is empty.")
 
     # Use the specified final output directory for all files
-    output_dir = "/content/drive/MyDrive/IndexTTS/outputs"
+    output_dir = "/content/drive/MyDrive/Index-TTS/outputs"
     os.makedirs(output_dir, exist_ok=True)
     
     wav_paths = []
