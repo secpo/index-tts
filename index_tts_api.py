@@ -199,7 +199,11 @@ async def synthesize(
     file: Optional[UploadFile] = File(None),
     duration_sec: Optional[float] = Form(None),
 ):
-    """Synthesize speech from text or a text file with chunking."""
+    """
+    Synthesize speech from text or a text file with chunking.
+    Saves intermediate and final files to a specified output directory
+    with a filename based on the input file.
+    """
     if tts_service is None:
         raise HTTPException(status_code=503, detail="TTS service is not available. Check model path.")
 
@@ -207,25 +211,29 @@ async def synthesize(
         raise HTTPException(status_code=400, detail="Either 'text' (form field) or 'file' (upload) must be provided.")
 
     input_text = ""
-    if text:
+    base_filename = ""
+    if file and file.filename:
+        input_text = (await file.read()).decode("utf-8")
+        base_filename = os.path.splitext(file.filename)[0]
+    elif text:
         input_text = text
-    elif file:
-        contents = await file.read()
-        input_text = contents.decode("utf-8")
+        base_filename = f"synthesis_{uuid.uuid4()}"
 
     if not input_text:
         raise HTTPException(status_code=400, detail="Input text is empty.")
 
-    temp_dir = f"/tmp/{uuid.uuid4()}"
-    os.makedirs(temp_dir, exist_ok=True)
+    # Use the specified final output directory for all files
+    output_dir = "/content/drive/MyDrive/IndexTTS/outputs"
+    os.makedirs(output_dir, exist_ok=True)
     
+    wav_paths = []
     try:
         chunks = chunk_text(input_text, max_length=250)
-        wav_paths = []
+        print(f"Starting synthesis for {len(chunks)} chunks, using base name: '{base_filename}'")
 
-        print(f"Starting synthesis for {len(chunks)} chunks...")
         for i, chunk in enumerate(chunks):
-            out_path = os.path.join(temp_dir, f"{i}.wav")
+            # Intermediate files are named based on the base filename and chunk index
+            out_path = os.path.join(output_dir, f"{base_filename}_{i+1}.wav")
             try:
                 tts_service.infer_chunk(
                     text=chunk,
@@ -234,7 +242,7 @@ async def synthesize(
                     duration_sec=duration_sec if i == 0 else None
                 )
                 wav_paths.append(out_path)
-                print(f"  - Chunk {i+1}/{len(chunks)} synthesized.")
+                print(f"  - Chunk {i+1}/{len(chunks)} saved to: {out_path}")
             except Exception as e:
                 print(f"\033[91mError processing chunk {i+1}: {e}\033[0m")
                 raise HTTPException(status_code=500, detail=f"Error processing chunk {i+1}: {str(e)}")
@@ -242,11 +250,8 @@ async def synthesize(
         if not wav_paths:
             raise HTTPException(status_code=500, detail="Synthesis failed, no audio chunks were generated.")
 
-        output_filename = f"{uuid.uuid4()}_final.wav"
-        # Hardcode the output directory to a specific Google Drive path
-        output_dir = "/content/drive/MyDrive/IndexTTS/outputs"
-        os.makedirs(output_dir, exist_ok=True) # Ensure the directory exists
-        final_out_path = os.path.join(output_dir, output_filename)
+        # Final merged file is named based on the base filename
+        final_out_path = os.path.join(output_dir, f"{base_filename}.wav")
         
         merge_wavs(wav_paths, final_out_path)
         print(f"\033[92mSynthesis complete. Final audio at: {final_out_path}\033[0m")
@@ -254,7 +259,15 @@ async def synthesize(
         return {"output_path": final_out_path, "message": "Synthesis successful."}
 
     finally:
-        shutil.rmtree(temp_dir)
+        # Clean up intermediate chunk files after merging
+        if wav_paths:
+            print("Cleaning up intermediate files...")
+            for p in wav_paths:
+                try:
+                    os.remove(p)
+                    print(f"  - Removed {p}")
+                except OSError as e:
+                    print(f"\033[91mError removing intermediate file {p}: {e}\033[0m")
 
 def main():
     """Sets up ngrok tunnel and starts the FastAPI server."""
