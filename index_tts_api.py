@@ -284,11 +284,15 @@ def main():
     
     print("\n" + "="*60)
     print("🚀 IndexTTS API is running!")
-    print(f"✅ Public Docs URL (ngrok): {public_url}/docs")
-    print(f"✅ Command line example:")
-    print(f"  curl -X POST -F \"voice_path=/content/drive/MyDrive/Index-TTS/samples/sample1.wav\" -F \"file=@/path/on/your/local/machine/input.txt\" \\\n"
-          f"  -F \"duration_sec=15\" {public_url}/api/synthesize")
+    print(f"✅ Public API Endpoint (ngrok): {public_url.public_url}/api/synthesize")
+    print(f"✅ Public Docs URL (ngrok):   {public_url.public_url}/docs")
+    print(f"✅ Local Docs URL:            http://{host}:{port}/docs")
     print("="*60 + "\n")
+    print("Hint: Use a POST request to the API endpoint with form data:")
+    print("  - 'voice_path': Path to the voice sample in the remote (e.g., Colab) environment.")
+    print("  - 'file':       Text file to synthesize (e.g., @local_file.txt).")
+    print("  - 'text':       Alternatively, a string of text to synthesize.")
+    print("-"*60)
 
     uvicorn.run(app, host=host, port=port)
 
