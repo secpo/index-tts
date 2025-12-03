@@ -5,6 +5,7 @@ import wave
 import torch
 from tqdm import tqdm
 from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from indextts.infer_v2 import IndexTTS2
 
@@ -94,6 +95,7 @@ def main():
     parser.add_argument("--input_file", type=str, required=True, help="Path to the input text file.")
     parser.add_argument("--voice_prompt", type=str, required=True, help="Path to the reference voice audio file (WAV).")
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/", help="Directory to save the output audio file.")
+    parser.add_argument("--devices", type=str, default="auto", help="Comma-separated devices like 'cuda:0,cuda:1' or 'auto' or 'cpu'.")
 
     args = parser.parse_args()
 
@@ -115,17 +117,34 @@ def main():
         return
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # --- 2. Load Model ---
-    print("Loading TTS model...")
+    if args.devices == "auto":
+        if torch.cuda.is_available():
+            count = torch.cuda.device_count()
+            devices = [f"cuda:{i}" for i in range(count)]
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            devices = ["xpu"]
+        elif hasattr(torch, "mps") and torch.backends.mps.is_available():
+            devices = ["mps"]
+        else:
+            devices = ["cpu"]
+    else:
+        devices = [d.strip() for d in args.devices.split(",") if d.strip()]
+
+    print("Loading TTS models on:", ", ".join(devices))
     try:
-        tts_model = IndexTTS2(
-            model_dir=args.model_dir,
-            cfg_path=args.config,
-            use_fp16=True,
-            use_cuda_kernel=False,
-            use_deepspeed=False,
-            use_accel=False
-        )
+        tts_models = []
+        for dev in devices:
+            use_fp16 = False if dev == "cpu" else True
+            m = IndexTTS2(
+                model_dir=args.model_dir,
+                cfg_path=args.config,
+                use_fp16=use_fp16,
+                use_cuda_kernel=False,
+                use_deepspeed=False,
+                use_accel=False,
+                device=dev,
+            )
+            tts_models.append(m)
     except Exception as e:
         print(f"Error loading TTS model: {e}")
         return
@@ -142,23 +161,41 @@ def main():
     wav_paths = []
     base_filename = os.path.splitext(os.path.basename(args.input_file))[0]
     
-    # Overall progress bar for chunks
-    for i, chunk in enumerate(tqdm(chunks, desc="Total Synthesis Progress")):
-        chunk_out_path = os.path.join(args.output_dir, f"{base_filename}_chunk_{i+1}.wav")
-        
-        try:
-            tts_model.infer(
-                spk_audio_prompt=args.voice_prompt,
-                text=chunk,
-                output_path=chunk_out_path,
-            )
-            wav_paths.append(chunk_out_path)
-        except Exception as e:
-            print(f"\nError processing chunk {i+1}: {e}")
-            # Clean up and exit on error
-            for p in wav_paths:
-                os.remove(p)
-            return
+    if len(tts_models) == 1:
+        for i, chunk in enumerate(tqdm(chunks, desc="Total Synthesis Progress")):
+            chunk_out_path = os.path.join(args.output_dir, f"{base_filename}_chunk_{i+1}.wav")
+            try:
+                tts_models[0].infer(
+                    spk_audio_prompt=args.voice_prompt,
+                    text=chunk,
+                    output_path=chunk_out_path,
+                )
+                wav_paths.append(chunk_out_path)
+            except Exception as e:
+                print(f"\nError processing chunk {i+1}: {e}")
+                for p in wav_paths:
+                    os.remove(p)
+                return
+    else:
+        tasks = []
+        for i, chunk in enumerate(chunks):
+            outp = os.path.join(args.output_dir, f"{base_filename}_chunk_{i+1}.wav")
+            model = tts_models[i % len(tts_models)]
+            tasks.append((i, chunk, outp, model))
+        paths_dict = {}
+        with ThreadPoolExecutor(max_workers=len(tts_models)) as ex:
+            futures = [ex.submit(lambda t: t[3].infer(spk_audio_prompt=args.voice_prompt, text=t[1], output_path=t[2]) or (t[0], t[2]), task) for task in tasks]
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Total Synthesis Progress"):
+                try:
+                    idx, p = fut.result()
+                    paths_dict[idx] = p
+                except Exception as e:
+                    print(f"\nError during parallel synthesis: {e}")
+                    for p in paths_dict.values():
+                        if os.path.exists(p):
+                            os.remove(p)
+                    return
+        wav_paths = [paths_dict[i] for i in range(len(chunks))]
 
     # --- 5. Merge and Clean up ---
     if wav_paths:
