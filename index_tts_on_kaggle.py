@@ -89,8 +89,8 @@ def main():
         description="Batch Text-to-Speech Synthesis for Kaggle using Index-TTS 1.5 (infer_fast).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--model_dir", type=str, default="checkpoints", help="Path to the model checkpoints directory.")
-    parser.add_argument("--config", type=str, default="checkpoints/config.yaml", help="Path to the model's config.yaml file.")
+    parser.add_argument("--model_dir", type=str, default="/kaggle/working/index-tts/checkpoints", help="Path to the absolute model checkpoints directory.")
+    parser.add_argument("--config", type=str, default="/kaggle/working/index-tts/checkpoints/config.yaml", help="Path to the absolute model's config.yaml file.")
     parser.add_argument("--input_file", type=str, required=True, help="Path to the input text file.")
     parser.add_argument("--voice_prompt", type=str, required=True, help="Path to the reference voice audio file (WAV).")
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/", help="Directory to save the output audio file.")
