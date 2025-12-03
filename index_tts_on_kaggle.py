@@ -99,6 +99,9 @@ def main():
 
     args = parser.parse_args()
 
+    print(f"Using model_dir: {args.model_dir}")
+    print(f"Using config: {args.config}")
+    print(f"Output directory: {args.output_dir}")
     # --- 1. Sanity Checks ---
     if not os.path.isdir(args.model_dir):
         print(f"Error: Model directory not found at '{args.model_dir}'")
@@ -116,16 +119,18 @@ def main():
 
     # --- 2. Load Model ---
     use_deepspeed = not args.disable_deepspeed
+    use_accel = not args.disable_accel
     print("Loading TTS model...")
     try:
         tts_model = IndexTTS2(
-            model_dir = args.model_dir,
-            cfg_path = args.config,
-            use_fp16 = True,
-            use_deepspeed = True if not args.disable_deepspeed else False,
-            use_accel = True if not args.disable_accel else False
+            model_dir=args.model_dir,
+            cfg_path=args.config,
+            use_fp16=True,
+            use_deepspeed=use_deepspeed,
+            use_accel=use_accel,
+            use_cuda_kernel=False
         )
-        print(f"TTS model loaded successfully. DeepSpeed enabled: {use_deepspeed}")
+        print(f"TTS model loaded successfully. DeepSpeed: {use_deepspeed}, Accel: {use_accel}, CUDA kernel: {use_cuda_kernel}")
     except Exception as e:
         print(f"Error loading TTS model: {e}")
         return
