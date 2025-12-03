@@ -123,10 +123,9 @@ def main():
             cfg_path=args.config,
             use_fp16=True,
             use_cuda_kernel=False,
-            use_deepspeed=True,
+            use_deepspeed=False,
             use_accel=False
         )
-        print(f"TTS model loaded successfully. DeepSpeed: {use_deepspeed}, Accel: {use_accel}")
     except Exception as e:
         print(f"Error loading TTS model: {e}")
         return
@@ -148,9 +147,9 @@ def main():
         chunk_out_path = os.path.join(args.output_dir, f"{base_filename}_chunk_{i+1}.wav")
         
         try:
-            tts_model.tts.infer_v2(
-                text=chunk,
+            tts_model.infer(
                 spk_audio_prompt=args.voice_prompt,
+                text=chunk,
                 output_path=chunk_out_path,
             )
             wav_paths.append(chunk_out_path)
