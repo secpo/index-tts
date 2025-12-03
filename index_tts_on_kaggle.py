@@ -94,8 +94,6 @@ def main():
     parser.add_argument("--input_file", type=str, required=True, help="Path to the input text file.")
     parser.add_argument("--voice_prompt", type=str, required=True, help="Path to the reference voice audio file (WAV).")
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/", help="Directory to save the output audio file.")
-    parser.add_argument("--disable_deepspeed", action="store_true", help="Disable DeepSpeed for accelerated inference.")
-    parser.add_argument("--disable_accel", action="store_true", help="Disable accelerated inference.")
 
     args = parser.parse_args()
 
@@ -118,19 +116,15 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # --- 2. Load Model ---
-    use_deepspeed = not args.disable_deepspeed
-    use_accel = not args.disable_accel
     print("Loading TTS model...")
     try:
         tts_model = IndexTTS2(
             model_dir=args.model_dir,
             cfg_path=args.config,
             use_fp16=True,
-            use_deepspeed=use_deepspeed,
-            use_accel=use_accel,
             use_cuda_kernel=False
         )
-        print(f"TTS model loaded successfully. DeepSpeed: {use_deepspeed}, Accel: {use_accel}, CUDA kernel: {use_cuda_kernel}")
+        print(f"TTS model loaded successfully. DeepSpeed: {use_deepspeed}, Accel: {use_accel}")
     except Exception as e:
         print(f"Error loading TTS model: {e}")
         return
